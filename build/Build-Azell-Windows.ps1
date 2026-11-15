@@ -33,6 +33,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw 'The compiled JavaScript bundle failed verification.'
     }
+
+    # Build the Electron main/renderer bundles and utility process before packaging.
+    Invoke-Pnpm run build
+
     Invoke-Pnpm exec electron-builder --config electron-builder.azell.config.cjs --win --x64 --publish never
 
     $version = & node -p "require('./package.json').version"
