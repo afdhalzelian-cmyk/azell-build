@@ -54,12 +54,42 @@ jobs:
             throw 'The installed pnpm does not match the build configuration.'
           }
 
+      - name: Normalize upstream source line endings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git -C upstream config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to disable automatic line-ending conversion.' }
+          git -C upstream config core.eol lf
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to set LF as the upstream working-tree line ending.' }
+          git -C upstream checkout-index --force --all
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to restore the upstream source with normalized line endings.' }
+          $files = @(
+            'src/main/core/paths/__tests__/constants.test.ts',
+            'src/main/core/paths/constants.ts',
+            'src/main/core/paths/pathRegistry.ts',
+            'src/main/core/preboot/__tests__/userDataLocation.test.ts',
+            'src/main/core/preboot/userDataLocation.ts',
+            'src/main/services/AppUpdaterService.ts',
+            'src/main/services/__tests__/AppUpdaterService.test.ts',
+            'src/main/services/protocol/ProtocolService.ts',
+            'src/main/utils/__tests__/appEdition.test.ts',
+            'src/main/utils/appEdition.ts'
+          )
+          git -C upstream ls-files --eol -- $files
+
       - name: Apply Azell patch and build Windows executables
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $patch = Join-Path $pwd 'build/Azell-Cherry-v2.2.2.patch'
+          if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
+            throw 'The Azell patch file is missing from the repository root build folder.'
+          }
+          $patchHash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Azell patch SHA256: $patchHash"
           git -C upstream apply --check $patch
-          if ($LASTEXITCODE -ne 0) { throw 'The Azell patch does not apply to the pinned source.' }
+          if ($LASTEXITCODE -ne 0) { throw 'The Azell patch does not apply to the pinned source after line-ending normalization.' }
           git -C upstream apply $patch
           if ($LASTEXITCODE -ne 0) { throw 'Unable to apply the Azell patch.' }
           ./build/Build-Azell-Windows.ps1 -SourceDirectory ./upstream
