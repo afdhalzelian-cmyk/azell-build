@@ -1,0 +1,410 @@
+diff --git a/electron-builder.azell.config.cjs b/electron-builder.azell.config.cjs
+new file mode 100644
+index 0000000..f545ada
+--- /dev/null
++++ b/electron-builder.azell.config.cjs
+@@ -0,0 +1,39 @@
++const { readFileSync } = require('node:fs')
++const { join } = require('node:path')
++const { parse } = require('yaml')
++
++const base = parse(readFileSync(join(__dirname, 'electron-builder.yml'), 'utf8'))
++delete base.protocols
++
++module.exports = {
++  ...base,
++  extends: null,
++  appId: 'com.azell.personalassistant',
++  productName: 'Azell Personal Assistant',
++  extraMetadata: {
++    ...base.extraMetadata,
++    name: 'azell-personal-assistant',
++    productName: 'Azell Personal Assistant'
++  },
++  directories: {
++    ...base.directories,
++    output: 'dist-azell'
++  },
++  publish: null,
++  win: {
++    ...base.win,
++    executableName: 'Azell',
++    artifactName: 'Azell-${version}-${arch}-setup.${ext}',
++    verifyUpdateCodeSignature: true
++  },
++  nsis: {
++    ...base.nsis,
++    guid: 'e2221d05-252c-4407-a312-b01dc62a7104',
++    artifactName: 'Azell-${version}-${arch}-setup.${ext}',
++    deleteAppDataOnUninstall: false
++  },
++  portable: {
++    ...base.portable,
++    artifactName: 'Azell-${version}-${arch}-portable.${ext}'
++  }
++}
+diff --git a/src/main/core/paths/__tests__/constants.test.ts b/src/main/core/paths/__tests__/constants.test.ts
+index 248e994..35a2155 100644
+--- a/src/main/core/paths/__tests__/constants.test.ts
++++ b/src/main/core/paths/__tests__/constants.test.ts
+@@ -25,9 +25,11 @@ function stubPlatform(platform: NodeJS.Platform) {
+ 
+ function stubElectron({
+   isPackaged = false,
++  name = 'Cherry Studio',
+   userData = DEFAULT_USER_DATA
+ }: {
+   isPackaged?: boolean
++  name?: string
+   userData?: string
+ } = {}) {
+   const state = { logs: DEFAULT_LOGS }
+@@ -41,7 +43,7 @@ function stubElectron({
+   })
+   vi.doMock('electron', () => ({
+     __esModule: true,
+-    app: { isPackaged, getPath, setAppLogsPath }
++    app: { isPackaged, name, getPath, setAppLogsPath }
+   }))
+   return { setAppLogsPath, getPath }
+ }
+@@ -220,3 +222,11 @@ describe('CS_DEV_PROFILE_ROOT validation', () => {
+     expect(LOGS_DIR).toBe(`${DEFAULT_LOGS}DevQuito`)
+   })
+ })
++
++it('keeps packaged Azell boot settings outside the Cherry Studio home', async () => {
++  stubElectron({ isPackaged: true, name: 'Azell Personal Assistant' })
++  const { CHERRY_HOME, BOOT_CONFIG_PATH } = await loadConstants()
++
++  expect(CHERRY_HOME).toBe(path.join(os.homedir(), '.azell-personal-assistant'))
++  expect(BOOT_CONFIG_PATH).toBe(path.join(CHERRY_HOME, 'boot-config.json'))
++})
+diff --git a/src/main/core/paths/constants.ts b/src/main/core/paths/constants.ts
+index 1b9755f..4c0c4be 100644
+--- a/src/main/core/paths/constants.ts
++++ b/src/main/core/paths/constants.ts
+@@ -2,7 +2,7 @@
+ //
+ // CONSTRAINTS:
+ //   - No business-module dependencies (no @shared / @main / business code).
+-//   - Only node built-ins and `electron` are allowed.
++//   - Only node built-ins, `electron`, and product identity are allowed.
+ //   - Electron's `app.getPath()` is safe at this layer: it works at module
+ //     import time, before `app.whenReady()`. Verified by LoggerService which
+ //     constructs at module load and consumes LOGS_DIR through this file.
+@@ -18,7 +18,9 @@ import path from 'node:path'
+ 
+ import { app } from 'electron'
+ 
+-export const CHERRY_HOME_DIRNAME = '.cherrystudio'
++import { isAzellBuild } from '../productIdentity'
++
++export const CHERRY_HOME_DIRNAME = isAzellBuild() ? '.azell-personal-assistant' : '.cherrystudio'
+ 
+ function resolveDevProfileRoot(): string | undefined {
+   if (app.isPackaged) return undefined
+diff --git a/src/main/core/paths/pathRegistry.ts b/src/main/core/paths/pathRegistry.ts
+index 74f44c4..199b66c 100644
+--- a/src/main/core/paths/pathRegistry.ts
++++ b/src/main/core/paths/pathRegistry.ts
+@@ -19,6 +19,7 @@ import { app } from 'electron'
+ import { loggerService } from '@logger'
+ import { isMac, isWin } from '@main/core/platform'
+ 
++import { isAzellBuild } from '../productIdentity'
+ import { CHERRY_HOME, LOGS_DIR } from './constants'
+ 
+ const logger = loggerService.withContext('PathRegistry')
+@@ -55,7 +56,7 @@ export function buildPathRegistry() {
+   const appUserDataToolchainMise = path.join(appUserDataToolchain, 'mise')
+   const appSession = app.getPath('sessionData')
+   const sysTemp = app.getPath('temp')
+-  const appTemp = path.join(sysTemp, 'CherryStudio')
++  const appTemp = path.join(sysTemp, isAzellBuild() ? 'Azell' : 'CherryStudio')
+   // electron-builder `extraResources` output — distinct from appRootResources
+   const appExtraResources = process.resourcesPath
+   // `resources/` inside asar (bundled assets) — distinct from appExtraResources
+diff --git a/src/main/core/preboot/__tests__/userDataLocation.test.ts b/src/main/core/preboot/__tests__/userDataLocation.test.ts
+index 666bd84..3f3c433 100644
+--- a/src/main/core/preboot/__tests__/userDataLocation.test.ts
++++ b/src/main/core/preboot/__tests__/userDataLocation.test.ts
+@@ -27,6 +27,7 @@ interface PlatformFlags {
+ }
+ 
+ interface ElectronStubOptions {
++  name?: string
+   isPackaged?: boolean
+   exePath?: string
+   userData?: string
+@@ -73,6 +74,7 @@ function stubElectron(opts: ElectronStubOptions = {}) {
+     __esModule: true,
+     app: {
+       isPackaged,
++      name: opts.name ?? 'Cherry Studio',
+       getPath,
+       setPath: setPathMock,
+       // Consumed by core/paths/constants.ts (now in this module's import
+@@ -559,3 +561,17 @@ describe('resolveUserDataLocation', () => {
+     })
+   })
+ })
++
++it('uses an Azell-specific data directory for portable builds', async () => {
++  stubElectron({ name: 'Azell Personal Assistant' })
++  stubConstants({ isLinux: false, isWin: true, isPortable: true })
++  stubBootConfig()
++  stubFs()
++  const portableDir = resolvePath('/mock/portable')
++  vi.stubEnv('PORTABLE_EXECUTABLE_DIR', portableDir)
++  const { getNormalizedExecutablePath, resolveUserDataLocation } = await loadModule()
++
++  expect(getNormalizedExecutablePath()).toBe(join(portableDir, 'azell-portable.exe'))
++  resolveUserDataLocation()
++  expect(setPathMock).toHaveBeenCalledWith('userData', join(portableDir, 'azell-data'))
++})
+diff --git a/src/main/core/preboot/userDataLocation.ts b/src/main/core/preboot/userDataLocation.ts
+index 3a082e4..c0d89b8 100644
+--- a/src/main/core/preboot/userDataLocation.ts
++++ b/src/main/core/preboot/userDataLocation.ts
+@@ -6,6 +6,7 @@ import { app } from 'electron'
+ import { loggerService } from '@logger'
+ import { DEV_PROFILE_ROOT, resolveDevUserDataPath } from '@main/core/paths/constants'
+ import { isLinux, isPortable, isWin } from '@main/core/platform'
++import { isAzellBuild } from '@main/core/productIdentity'
+ import { bootConfigService } from '@main/data/bootConfig'
+ 
+ const logger = loggerService.withContext('Preboot')
+@@ -22,7 +23,10 @@ export function getNormalizedExecutablePath(): string {
+     return path.join(path.dirname(process.env.APPIMAGE), 'cherry-studio.appimage')
+   }
+   if (isWin && isPortable) {
+-    return path.join(process.env.PORTABLE_EXECUTABLE_DIR || '', 'cherry-studio-portable.exe')
++    return path.join(
++      process.env.PORTABLE_EXECUTABLE_DIR || '',
++      isAzellBuild() ? 'azell-portable.exe' : 'cherry-studio-portable.exe'
++    )
+   }
+   return app.getPath('exe')
+ }
+@@ -72,7 +76,10 @@ export function resolveUserDataLocation(): void {
+ 
+   if (isPortable) {
+     const portableDir = process.env.PORTABLE_EXECUTABLE_DIR
+-    const portablePath = path.join(portableDir || app.getPath('exe'), 'data')
++    const portablePath = path.join(
++      portableDir || path.dirname(app.getPath('exe')),
++      isAzellBuild() ? 'azell-data' : 'data'
++    )
+     app.setPath('userData', portablePath)
+     logger.info('userData set for portable build', { portablePath })
+   }
+diff --git a/src/main/core/productIdentity.ts b/src/main/core/productIdentity.ts
+new file mode 100644
+index 0000000..a270b5a
+--- /dev/null
++++ b/src/main/core/productIdentity.ts
+@@ -0,0 +1,8 @@
++import { app } from 'electron'
++
++export const AZELL_PRODUCT_NAME = 'Azell Personal Assistant'
++export const AZELL_APPLICATION_ID = 'com.azell.personalassistant'
++
++export function isAzellBuild(): boolean {
++  return app.isPackaged && app.name === AZELL_PRODUCT_NAME
++}
+diff --git a/src/main/services/AppUpdaterService.ts b/src/main/services/AppUpdaterService.ts
+index 8bbdf90..fd18fc0 100644
+--- a/src/main/services/AppUpdaterService.ts
++++ b/src/main/services/AppUpdaterService.ts
+@@ -12,6 +12,7 @@ import { loggerService } from '@logger'
+ import { computeBackoff } from '@main/core/job/runtime/backoff'
+ import { BaseService, DependsOn, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+ import { isWin } from '@main/core/platform'
++import { isAzellBuild } from '@main/core/productIdentity'
+ import { WindowType } from '@main/core/window/types'
+ import { getAppLanguage, t } from '@main/i18n'
+ import { regionService } from '@main/services/RegionService'
+@@ -105,6 +106,8 @@ export class AppUpdaterService extends BaseService {
+   private updateCheckFailures = 0
+ 
+   protected async onInit(): Promise<void> {
++    if (isAzellBuild()) return
++
+     autoUpdater.logger = logger as Logger
+     // Packaged builds use app-update.yml generated from electron-builder.yml;
+     // development uses the repository's dev-app-update.yml.
+@@ -139,6 +142,8 @@ export class AppUpdaterService extends BaseService {
+   }
+ 
+   protected async onAllReady(): Promise<void> {
++    if (isAzellBuild()) return
++
+     application.get('PowerService').registerShutdownHandler(() => {
+       autoUpdater.autoDownload = false
+     })
+@@ -276,6 +281,8 @@ export class AppUpdaterService extends BaseService {
+   }
+ 
+   private async fetchReleaseHistory(): Promise<ReleaseNotesEntry[] | null> {
++    if (isAzellBuild()) return null
++
+     try {
+       const { updateHeaders } = await this.getUpdateRequest()
+       const response = await net.fetch(RELEASE_HISTORY_URL, {
+@@ -310,7 +317,7 @@ export class AppUpdaterService extends BaseService {
+     | { status: 'current'; currentVersion: string }
+     | { status: 'available'; currentVersion: string; version: string }
+   > {
+-    if (this.isPortable()) return { status: 'unsupported' }
++    if (isAzellBuild() || this.isPortable()) return { status: 'unsupported' }
+     const { currentVersion, updateChannel, updateHeaders } = await this.getUpdateRequest()
+     const updater = new ReleaseNotesUpdater()
+     updater.logger = logger as Logger
+@@ -328,6 +335,8 @@ export class AppUpdaterService extends BaseService {
+   }
+ 
+   public async getLatestReleaseNotes(): Promise<ReleaseNotesEntry | null> {
++    if (isAzellBuild()) return null
++
+     try {
+       const { updateChannel, updateHeaders } = await this.getUpdateRequest()
+       const updater = new ReleaseNotesUpdater()
+@@ -407,6 +416,8 @@ export class AppUpdaterService extends BaseService {
+    * broadcast (see `registerAutoUpdaterListeners`), not the return value.
+    */
+   private async performUpdateCheck() {
++    if (isAzellBuild()) return { currentVersion: app.getVersion(), updateInfo: null }
++
+     void application.get('AnalyticsService').trackAppUpdate()
+ 
+     if (this.isPortable()) {
+@@ -488,6 +499,8 @@ export class AppUpdaterService extends BaseService {
+   }
+ 
+   public quitAndInstall() {
++    if (isAzellBuild()) return
++
+     application.markQuitting()
+     setImmediate(() => autoUpdater.quitAndInstall(true, true))
+   }
+diff --git a/src/main/services/__tests__/AppUpdaterService.test.ts b/src/main/services/__tests__/AppUpdaterService.test.ts
+index 2d31114..c3603d2 100644
+--- a/src/main/services/__tests__/AppUpdaterService.test.ts
++++ b/src/main/services/__tests__/AppUpdaterService.test.ts
+@@ -76,6 +76,7 @@ vi.mock('@main/utils/systemInfo', () => ({
+ vi.mock('electron', () => ({
+   app: {
+     isPackaged: true,
++    name: 'Cherry Studio',
+     getVersion: vi.fn(() => '1.0.0'),
+     getLocale: vi.fn(() => 'en-US')
+   },
+@@ -158,6 +159,25 @@ describe('AppUpdaterService', () => {
+     appUpdater = new AppUpdaterService()
+   })
+ 
++  it('keeps Azell off the Cherry update feed, including manual checks and release notes', async () => {
++    const product = app as { name: string }
++    product.name = 'Azell Personal Assistant'
++    try {
++      await expect(appUpdater.checkForUpdates()).resolves.toEqual({ currentVersion: '1.0.0', updateInfo: null })
++      await expect(appUpdater.queryUpdateAvailability()).resolves.toEqual({ status: 'unsupported' })
++      await expect(appUpdater.getReleaseHistory()).resolves.toBeNull()
++      appUpdater.quitAndInstall()
++      await new Promise<void>((resolve) => setImmediate(resolve))
++      expect(trackAppUpdateMock).not.toHaveBeenCalled()
++      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled()
++      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled()
++      expect(releaseNotesCheckMock).not.toHaveBeenCalled()
++      expect(netFetchMock).not.toHaveBeenCalled()
++    } finally {
++      product.name = 'Cherry Studio'
++    }
++  })
++
+   describe('upgrade release notes', () => {
+     const notes = '<!--LANG:en-->Notes<!--LANG:zh-CN-->说明<!--LANG:END-->'
+ 
+diff --git a/src/main/services/protocol/ProtocolService.ts b/src/main/services/protocol/ProtocolService.ts
+index 20d3b3a..a84de81 100644
+--- a/src/main/services/protocol/ProtocolService.ts
++++ b/src/main/services/protocol/ProtocolService.ts
+@@ -12,6 +12,7 @@ import { loggerService } from '@logger'
+ import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+ import { DEV_PROFILE_ROOT } from '@main/core/paths/constants'
+ import { isLinux, isPortable, isWin } from '@main/core/platform'
++import { isAzellBuild } from '@main/core/productIdentity'
+ import { WindowType } from '@main/core/window/types'
+ import { openSettingsInMainWindow } from '@main/services/mainWindowNavigation'
+ import type { ProtocolMcpInstallRequest } from '@shared/data/types/mcpProtocolInstall'
+@@ -143,7 +144,7 @@ export class ProtocolService extends BaseService {
+   }
+ 
+   private registerProtocolScheme() {
+-    if (DEV_PROFILE_ROOT) return
++    if (DEV_PROFILE_ROOT || isAzellBuild()) return
+ 
+     // In dev, Electron needs the app entry as an absolute path; launchers often
+     // pass "." as argv[1], which becomes invalid when the OS invokes the
+@@ -162,7 +163,7 @@ export class ProtocolService extends BaseService {
+   }
+ 
+   private handleProtocolUrl(url: string) {
+-    if (!url) return
++    if (!url || isAzellBuild()) return
+ 
+     if (!this.areServicesReady || !this.isMainRendererReady) {
+       this.pendingProtocolUrls.push(url)
+@@ -253,7 +254,7 @@ export class ProtocolService extends BaseService {
+    */
+   private async setupAppImageDeepLink(): Promise<void> {
+     // Only run on Linux and when packaged as an AppImage
+-    if (DEV_PROFILE_ROOT || !isLinux || !process.env.APPIMAGE) {
++    if (DEV_PROFILE_ROOT || isAzellBuild() || !isLinux || !process.env.APPIMAGE) {
+       return
+     }
+ 
+diff --git a/src/main/utils/__tests__/appEdition.test.ts b/src/main/utils/__tests__/appEdition.test.ts
+index 943d4a4..589b542 100644
+--- a/src/main/utils/__tests__/appEdition.test.ts
++++ b/src/main/utils/__tests__/appEdition.test.ts
+@@ -81,6 +81,19 @@ describe('getAppEdition', () => {
+     expect(() => getAppEdition()).toThrow('Unsupported application edition: enterprise')
+   })
+ 
++  it('uses a distinct Windows application ID for packaged Azell', async () => {
++    setPackaged(true)
++    const product = app as { name?: string }
++    const originalName = product.name
++    product.name = 'Azell Personal Assistant'
++    try {
++      const getApplicationId = await loadGetApplicationId()
++      expect(getApplicationId()).toBe('com.azell.personalassistant')
++    } finally {
++      product.name = originalName
++    }
++  })
++
+   it('keeps runtime application IDs aligned with both packaging configurations', async () => {
+     const actualFs = await vi.importActual<typeof NodeFs>('node:fs')
+     const projectRoot = path.resolve(import.meta.dirname, '../../../..')
+diff --git a/src/main/utils/appEdition.ts b/src/main/utils/appEdition.ts
+index af1dea0..db06b04 100644
+--- a/src/main/utils/appEdition.ts
++++ b/src/main/utils/appEdition.ts
+@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
+ import { app } from 'electron'
+ 
+ import { application } from '@application'
++import { AZELL_APPLICATION_ID, isAzellBuild } from '@main/core/productIdentity'
+ import type { AppEdition } from '@shared/types/appEdition'
+ 
+ const APPLICATION_IDS = {
+@@ -41,5 +42,5 @@ export function getAppEdition(): AppEdition {
+ }
+ 
+ export function getApplicationId(): string {
+-  return APPLICATION_IDS[getAppEdition()]
++  return isAzellBuild() ? AZELL_APPLICATION_ID : APPLICATION_IDS[getAppEdition()]
+ }
