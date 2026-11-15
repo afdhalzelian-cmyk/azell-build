@@ -1,0 +1,108 @@
+name: Build Azell Windows x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      PNPM_VERSION: '12.6.0'
+      CHERRY_COMMIT: 25d57d98736634b223cf03dd44053fa3abb73eac
+
+    steps:
+      - name: Check out Azell build inputs
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned Cherry Studio source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: CherryHQ/cherry-studio
+          ref: 25d57d98736634b223cf03dd44053fa3abb73eac
+          path: upstream
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.1'
+          package-manager-cache: false
+
+      - name: Verify build inputs and install pnpm
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = git -C upstream rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:CHERRY_COMMIT) {
+            throw 'The upstream checkout does not match the expected commit.'
+          }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.ATL -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) {
+            throw 'The Windows image must provide Visual Studio C++ x64 tools with ATL.'
+          }
+          npm.cmd install --global "pnpm@$env:PNPM_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to install the pinned pnpm version.' }
+          $pnpm = pnpm.cmd --version
+          if ($LASTEXITCODE -ne 0 -or $pnpm -ne $env:PNPM_VERSION) {
+            throw 'The installed pnpm does not match the build configuration.'
+          }
+
+      - name: Apply Azell patch and build Windows executables
+        shell: pwsh
+        run: |
+          $patch = Join-Path $pwd 'build/Azell-Cherry-v2.2.2.patch'
+          git -C upstream apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'The Azell patch does not apply to the pinned source.' }
+          git -C upstream apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to apply the Azell patch.' }
+          ./build/Build-Azell-Windows.ps1 -SourceDirectory ./upstream
+
+      - name: Verify and stage build outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = Get-Content upstream/package.json -Raw | ConvertFrom-Json
+          $version = $metadata.version
+          $names = @("Azell-${version}-x64-setup.exe", "Azell-${version}-x64-portable.exe")
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $checksums = foreach ($name in $names) {
+            $path = Join-Path 'upstream/dist-azell' $name
+            $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $path).Path)
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) {
+                throw "$name does not have a valid Windows executable header."
+              }
+              $stream.Position = 0x3C
+              $offset = $reader.ReadUInt32()
+              if ($offset -lt 64 -or $offset -gt ($stream.Length - 4)) {
+                throw "$name has an invalid PE header offset."
+              }
+              $stream.Position = $offset
+              if ($reader.ReadUInt32() -ne 0x00004550) {
+                throw "$name does not contain a PE signature."
+              }
+            } finally {
+              $stream.Dispose()
+            }
+            Copy-Item -LiteralPath $path -Destination dist
+            $checksum = Get-FileHash -LiteralPath $path -Algorithm SHA256
+            "$($checksum.Hash.ToLowerInvariant())  $name"
+          }
+          $checksums | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding ascii
+
+      - name: Save Windows build outputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: azell-windows-x64-build
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
