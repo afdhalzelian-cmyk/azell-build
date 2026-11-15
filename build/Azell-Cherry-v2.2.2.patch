@@ -30,7 +30,7 @@ index 0000000..f545ada
 +    ...base.win,
 +    executableName: 'Azell',
 +    artifactName: 'Azell-${version}-${arch}-setup.${ext}',
-+    verifyUpdateCodeSignature: true
++    verifyUpdateCodeSignature: false
 +  },
 +  nsis: {
 +    ...base.nsis,
@@ -156,12 +156,12 @@ index 666bd84..3f3c433 100644
 +  stubBootConfig()
 +  stubFs()
 +  const portableDir = resolvePath('/mock/portable')
-+  const portableFile = join(portableDir, 'Azell-2.2.2-x64-portable.exe')
++  const portableExecutable = join(portableDir, 'Azell-2.2.2-x64-portable.exe')
 +  vi.stubEnv('PORTABLE_EXECUTABLE_DIR', portableDir)
-+  vi.stubEnv('PORTABLE_EXECUTABLE_FILE', portableFile)
++  vi.stubEnv('PORTABLE_EXECUTABLE_FILE', portableExecutable)
 +  const { getNormalizedExecutablePath, resolveUserDataLocation } = await loadModule()
 +
-+  expect(getNormalizedExecutablePath()).toBe(portableFile)
++  expect(getNormalizedExecutablePath()).toBe(portableExecutable)
 +  resolveUserDataLocation()
 +  expect(setPathMock).toHaveBeenCalledWith('userData', join(portableDir, 'azell-data'))
 +})
@@ -177,12 +177,15 @@ index 3a082e4..c0d89b8 100644
  import { bootConfigService } from '@main/data/bootConfig'
  
  const logger = loggerService.withContext('Preboot')
-@@ -22,7 +23,7 @@ export function getNormalizedExecutablePath(): string {
+@@ -22,7 +23,10 @@ export function getNormalizedExecutablePath(): string {
      return path.join(path.dirname(process.env.APPIMAGE), 'cherry-studio.appimage')
    }
    if (isWin && isPortable) {
 -    return path.join(process.env.PORTABLE_EXECUTABLE_DIR || '', 'cherry-studio-portable.exe')
-+    return process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe')
++    if (isAzellBuild()) {
++      return process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe')
++    }
++    return path.join(process.env.PORTABLE_EXECUTABLE_DIR || '', 'cherry-studio-portable.exe')
    }
    return app.getPath('exe')
  }
@@ -210,7 +213,7 @@ index 0000000..a270b5a
 +export const AZELL_APPLICATION_ID = 'com.azell.personalassistant'
 +
 +export function isAzellBuild(): boolean {
-+  return app.isPackaged && app.name === AZELL_PRODUCT_NAME
++  return app.isPackaged && (app.name === AZELL_PRODUCT_NAME || app.name === 'azell-personal-assistant')
 +}
 diff --git a/src/main/services/AppUpdaterService.ts b/src/main/services/AppUpdaterService.ts
 index 8bbdf90..fd18fc0 100644
