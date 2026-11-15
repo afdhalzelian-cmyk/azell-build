@@ -1,0 +1,3 @@
+
+# Keep unified patch files LF on Windows runners.
+*.patch text eol=lf
