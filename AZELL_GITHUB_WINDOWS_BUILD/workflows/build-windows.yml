@@ -86,8 +86,25 @@ jobs:
           if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
             throw 'The Azell patch file is missing from the repository root build folder.'
           }
+
+          # Normalize the patch itself as LF. The Windows checkout may have
+          # converted this file to CRLF even when the upstream source is LF.
+          $patchText = [System.IO.File]::ReadAllText($patch)
+          $patchText = $patchText.Replace("`r`n", "`n").Replace("`r", "`n")
+          [System.IO.File]::WriteAllText(
+            $patch,
+            $patchText,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          # Refuse to build from an unexpected or partially edited patch.
           $patchHash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "Azell patch SHA256: $patchHash"
+          $expectedPatchHash = '97f75f15bcf97aa505f8621dc514914138b7e8cef30b607ff225f5c401dbd826'
+          if ($patchHash -ne $expectedPatchHash) {
+            throw "Azell patch SHA256 mismatch. Expected $expectedPatchHash but found $patchHash."
+          }
+          Write-Host "Verified Azell patch SHA256: $patchHash"
+
           git -C upstream apply --check $patch
           if ($LASTEXITCODE -ne 0) { throw 'The Azell patch does not apply to the pinned source after line-ending normalization.' }
           git -C upstream apply $patch
