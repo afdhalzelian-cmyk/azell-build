@@ -1,3 +1,2 @@
-
-# Keep unified patch files LF on Windows runners.
+# Keep unified patch files LF on Windows runners so git apply can match LF source files.
 *.patch text eol=lf
